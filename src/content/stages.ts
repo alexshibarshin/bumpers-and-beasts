@@ -15,14 +15,14 @@ const baseObstacles: ObstacleConfig[] = [
 const layouts: SocketConfig[][] = [
   SOCKETS,
   [[180,300],[540,300],[161,480],[559,480],[250,650],[470,650],[161,800],[559,800],[360,880]],
-  [[240,285],[480,285],[290,445],[430,445],[260,640],[460,640],[300,810],[420,810]],
-  [[161,330],[360,300],[559,330],[235,540],[485,540],[165,720],[360,680],[555,720],[270,860]],
-  [[360,250],[205,360],[515,360],[165,560],[555,560],[200,750],[520,750],[290,865],[430,865],[360,600]],
+  [[240,285],[480,285],[240,445],[480,445],[240,640],[480,640],[240,810],[480,810]],
+  [[161,330],[260,250],[559,330],[235,540],[485,540],[165,720],[260,680],[555,720],[250,860]],
+  [[250,250],[205,360],[515,360],[260,440],[440,665],[200,750],[520,750],[240,865],[480,865],[550,580]],
   [[185,280],[505,350],[245,455],[535,580],[190,665],[470,760],[265,850],[550,880]],
-  [[210,290],[360,340],[510,290],[165,525],[555,525],[250,690],[470,690],[200,850],[520,850]],
-  [[175,285],[360,265],[545,285],[220,470],[500,470],[175,665],[360,640],[545,665],[260,840],[460,840]],
-  [[161,300],[550,330],[285,475],[450,550],[170,700],[540,725],[290,855],[455,880]],
-  [[190,290],[280,350],[440,350],[530,290],[205,550],[515,550],[185,760],[360,720],[535,760],[360,900]],
+  [[210,290],[260,390],[510,290],[165,525],[555,525],[250,690],[470,690],[200,850],[520,850]],
+  [[175,285],[260,265],[545,285],[220,470],[500,470],[175,665],[260,640],[545,665],[260,840],[460,840]],
+  [[161,300],[550,330],[260,475],[450,550],[170,700],[540,725],[260,855],[455,880]],
+  [[190,290],[240,350],[480,350],[530,290],[205,550],[515,550],[185,760],[240,650],[535,760],[480,900]],
 ].map((points, i) => points.map((point, j) => Array.isArray(point)
   ? { id: `s${i + 1}-${j + 1}`, position: { x: point[0], y: point[1] } }
   : point as SocketConfig));
@@ -58,13 +58,13 @@ const definitions: Array<{
 }> = [
   { name:'Ржавый желудок',subtitle:'Голодная классика',lesson:'Ритм флипперов и строительство',colors:[0xb94e43,0xe4b75d,0xff6253],rewards:[15,20,25,4],recommended:1,obstacles:baseObstacles,builtIn:'basic' },
   { name:'Двойной желоб',subtitle:'Выбери сторону',lesson:'Контроль горизонтального направления',colors:[0x318f9a,0xe0bf63,0xff675c],rewards:[18,24,30,5],recommended:1,unlock:'magnet',obstacles:[...baseObstacles,{id:'channel-l',position:{x:245,y:520},width:20,height:450,angle:-.08},{id:'channel-r',position:{x:475,y:520},width:20,height:450,angle:.08}] },
-  { name:'Бронепресс',subtitle:'Сталь против стали',lesson:'Сильные удары против брони',colors:[0x6e7683,0xd28b4a,0xff4c47],rewards:[22,29,36,6],recommended:2,obstacles:[...baseObstacles,{id:'press-l',position:{x:235,y:500},width:260,height:22,angle:.62},{id:'press-r',position:{x:485,y:500},width:260,height:22,angle:-.62}] },
+  { name:'Бронепресс',subtitle:'Сталь против стали',lesson:'Сильные удары против брони',colors:[0x6e7683,0xd28b4a,0xff4c47],rewards:[22,29,36,6],recommended:2,obstacles:[...baseObstacles,{id:'press-l',position:{x:200,y:500},width:140,height:22,angle:.62},{id:'press-r',position:{x:520,y:500},width:140,height:22,angle:-.62}] },
   { name:'Ракетная кишка',subtitle:'Смотри наверх',lesson:'Реакция на телеграф ускорения',colors:[0x9b4d37,0xf0a23f,0xffef72],rewards:[26,34,42,7],recommended:2,unlock:'spinner',obstacles:[...baseObstacles,{id:'rocket-l',position:{x:150,y:610},width:170,height:18,angle:.32},{id:'rocket-r',position:{x:570,y:610},width:170,height:18,angle:-.32}] },
   { name:'Маточный цех',subtitle:'Держи толпу',lesson:'Контроль большого количества тел',colors:[0x6e3b69,0x69b97d,0xff6c86],rewards:[30,40,50,8],recommended:3,obstacles:[...baseObstacles,{id:'island',position:{x:360,y:560},width:175,height:115}] },
-  { name:'Ледяной слив',subtitle:'Длинные цепочки',lesson:'Планирование маршрутов',colors:[0x3375a0,0x9bdbe8,0xd8ffff],rewards:[35,46,57,9],recommended:3,unlock:'spring',obstacles:[...baseObstacles,{id:'zig-a',position:{x:250,y:420},width:260,height:18,angle:.4},{id:'zig-b',position:{x:470,y:610},width:260,height:18,angle:-.4}] },
-  { name:'Токсичный отстойник',subtitle:'Броня плавится',lesson:'Коррозия и урон в обход брони',colors:[0x49662d,0x9dce4d,0xffd848],rewards:[40,53,66,10],recommended:3,obstacles:[...baseObstacles,{id:'funnel-l',position:{x:230,y:300},width:280,height:18,angle:.42},{id:'funnel-r',position:{x:490,y:300},width:280,height:18,angle:-.42}] },
+  { name:'Ледяной слив',subtitle:'Длинные цепочки',lesson:'Планирование маршрутов',colors:[0x3375a0,0x9bdbe8,0xd8ffff],rewards:[35,46,57,9],recommended:3,unlock:'spring',obstacles:[...baseObstacles,{id:'zig-a',position:{x:250,y:420},width:190,height:18,angle:.4},{id:'zig-b',position:{x:470,y:610},width:190,height:18,angle:-.4}] },
+  { name:'Токсичный отстойник',subtitle:'Броня плавится',lesson:'Коррозия и урон в обход брони',colors:[0x49662d,0x9dce4d,0xffd848],rewards:[40,53,66,10],recommended:3,obstacles:[...baseObstacles,{id:'funnel-l',position:{x:200,y:300},width:130,height:18,angle:.42},{id:'funnel-r',position:{x:520,y:300},width:130,height:18,angle:-.42}] },
   { name:'Динамо-утроба',subtitle:'Собери кластер',lesson:'Цепной урон по плотной группе',colors:[0x553d8c,0xa67cff,0x6cf8ff],rewards:[46,61,76,12],recommended:4,unlock:'grinder',obstacles:[...baseObstacles,{id:'zone-l',position:{x:245,y:530},width:18,height:480},{id:'zone-r',position:{x:475,y:530},width:18,height:480}],builtIn:'electric' },
-  { name:'Собор металлолома',subtitle:'Точность или боль',lesson:'Тайминг кончика флиппера',colors:[0x784532,0xe3aa4e,0xff6154],rewards:[53,70,87,14],recommended:4,obstacles:[...baseObstacles,{id:'spire-l',position:{x:210,y:470},width:210,height:18,angle:1.05},{id:'spire-r',position:{x:510,y:600},width:210,height:18,angle:-1.05}],builtIn:'blast' },
+  { name:'Собор металлолома',subtitle:'Точность или боль',lesson:'Тайминг кончика флиппера',colors:[0x784532,0xe3aa4e,0xff6154],rewards:[53,70,87,14],recommended:4,obstacles:[...baseObstacles,{id:'spire-l',position:{x:210,y:470},width:190,height:18,angle:1.05},{id:'spire-r',position:{x:510,y:600},width:190,height:18,angle:-1.05}],builtIn:'blast' },
   { name:'Пасть Начальника',subtitle:'Финальная смена',lesson:'Проверка всей машины',colors:[0x7b2330,0xf0b447,0xff3348],rewards:[60,80,100,16],recommended:5,obstacles:baseObstacles },
 ];
 

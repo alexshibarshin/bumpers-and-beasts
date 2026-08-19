@@ -30,9 +30,15 @@ export function App() {
   const store = useMemo(() => new ProfileStore(), []);
   const [profile, setProfile] = useState(() => store.get());
   const [screen, setScreen] = useState<Screen>(() => {
-    const requested = import.meta.env.DEV ? new URLSearchParams(location.search).get('playStage') as StageId | null : null;
+    const params = new URLSearchParams(location.search);
+    const requested = import.meta.env.DEV ? params.get('playStage') as StageId | null : null;
     if (requested && STAGES.some(stage => stage.id === requested)) return { name:'game', loadout:{
-      stageId:requested, seed:0xb055, deck:profile.activeDeck.map(kind=>({kind,level:profile.bumperLevels[kind]??1})),
+      stageId:requested, seed:0xb055, deck:(import.meta.env.DEV
+        ? [...new Set([
+          ...((params.get('testDeck')?.split(',') ?? []).filter(kind => ALL_BUMPERS.includes(kind as BumperKind)) as BumperKind[]),
+          ...profile.activeDeck,
+        ])].slice(0, 8)
+        : profile.activeDeck).map(kind=>({kind,level:profile.bumperLevels[kind]??1})),
       inputLayout:profile.settings.inputLayout, flipperMotion:profile.settings.flipperMotion, debug:true,
     } };
     return { name:'campaign' };

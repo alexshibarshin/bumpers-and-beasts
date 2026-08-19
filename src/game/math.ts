@@ -61,3 +61,43 @@ export function shouldRescueStalledBody(
 ) {
   return speed < speedThreshold && movedDistance < distanceThreshold && stalledForMs >= rescueAfterMs;
 }
+
+export function shouldRescueSpatiallyTrappedBody(
+  distanceFromAnchor: number,
+  trappedForMs: number,
+  travelRadius: number,
+  rescueAfterMs: number,
+) {
+  return distanceFromAnchor < travelRadius && trappedForMs >= rescueAfterMs;
+}
+
+export function magneticPullVelocity(
+  position: { x: number; y: number },
+  target: { x: number; y: number },
+  velocity: { x: number; y: number },
+  radius: number,
+  strength: number,
+) {
+  const dx = target.x - position.x;
+  const dy = target.y - position.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= 1 || distance >= radius) return { ...velocity };
+  const falloff = .55 + .45 * (1 - distance / radius);
+  const impulse = strength * falloff;
+  return { x: velocity.x + dx / distance * impulse, y: velocity.y + dy / distance * impulse };
+}
+
+export function spinnerLaunchVelocity(
+  radial: { x: number; y: number },
+  outwardSpeed: number,
+  tangentialSpeed: number,
+  direction: 1 | -1,
+) {
+  const length = Math.hypot(radial.x, radial.y) || 1;
+  const x = radial.x / length;
+  const y = radial.y / length;
+  return {
+    x: x * outwardSpeed - y * tangentialSpeed * direction,
+    y: y * outwardSpeed + x * tangentialSpeed * direction,
+  };
+}

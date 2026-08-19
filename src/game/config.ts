@@ -25,8 +25,18 @@ export const GAME = {
   stuckSpeedThreshold: .85,
   stuckDistanceThreshold: 6,
   stuckRescueMs: 1600,
-  stuckRescueHorizontalSpeed: 7,
-  stuckRescueDownwardSpeed: 5.5,
+  trappedRescueMs: 2400,
+  trappedTravelRadiusMultiplier: 1.5,
+  trappedTravelRadiusMin: 80,
+  repeatedRescueDownwardNudgeMin: 96,
+  repeatedRescueDownwardNudgeRadiusMultiplier: 2.25,
+  stuckRescueHorizontalSpeed: 8.5,
+  stuckRescueDownwardSpeed: 7.5,
+  magnetPulseRadius: 250,
+  magnetPulseStrength: 16,
+  magnetReleaseSpeed: 6,
+  spinnerOutwardSpeed: 14,
+  spinnerTangentialSpeed: 18,
 } as const;
 
 export const ENEMIES: Record<EnemyKind, EnemyConfig> = {
@@ -39,18 +49,18 @@ export const ENEMIES: Record<EnemyKind, EnemyConfig> = {
 };
 
 export const BUMPERS: Record<BumperKind, BumperConfig> = {
-  basic: { kind:'basic',label:'Дубина',role:'Надёжный ударник',color:0xe7cc8e,damage:16,bounce:1.14,cooldownMs:0,radius:40,baseUpgradeCost:25,effectLabel:'чистый урон' },
-  fire: { kind:'fire',label:'Поджигатель',role:'Долгий огонь',color:0xff6a31,damage:10,bounce:.92,cooldownMs:220,radius:40,baseUpgradeCost:30,effectLabel:'горение 3,2 с' },
-  blast: { kind:'blast',label:'Бабах',role:'Взрыв по толпе',color:0xffd64f,damage:11,bounce:1.55,cooldownMs:1100,radius:42,baseUpgradeCost:38,effectLabel:'радиус 168' },
-  ice: { kind:'ice',label:'Морозилка',role:'Контроль скорости',color:0x79d6ff,damage:8,bounce:.55,cooldownMs:320,radius:40,baseUpgradeCost:30,effectLabel:'заморозка 2,2 с' },
-  spike: { kind:'spike',label:'Точило',role:'Пробой брони',color:0xd9d7cc,damage:24,bounce:.38,cooldownMs:180,radius:42,baseUpgradeCost:35,effectLabel:'тяжёлый контакт' },
-  electric: { kind:'electric',label:'Шокер',role:'Цепной разряд',color:0xb995ff,damage:9,bounce:.88,cooldownMs:620,radius:40,baseUpgradeCost:38,effectLabel:'до 3 целей' },
-  pit: { kind:'pit',label:'Жор-Яма',role:'Редкое поглощение',color:0x6e4d88,damage:999,bounce:.05,cooldownMs:4200,radius:43,baseUpgradeCost:50,effectLabel:'пожирает цель' },
-  poison: { kind:'poison',label:'Токсик',role:'Коррозия брони',color:0x8bea53,damage:5,bounce:.68,cooldownMs:360,radius:40,baseUpgradeCost:35,effectLabel:'яд 4,5 с' },
-  magnet: { kind:'magnet',label:'Притягатель',role:'Группировка целей',color:0x4de0db,damage:7,bounce:.64,cooldownMs:720,radius:41,baseUpgradeCost:42,effectLabel:'стяжка 185' },
-  spinner: { kind:'spinner',label:'Карусель',role:'Закручивает маршрут',color:0xff7db8,damage:12,bounce:1.02,cooldownMs:420,radius:41,baseUpgradeCost:38,effectLabel:'боковой импульс' },
-  spring: { kind:'spring',label:'Пружинный псих',role:'Максимальный бросок',color:0x70f29a,damage:6,bounce:2.08,cooldownMs:1250,radius:42,baseUpgradeCost:42,effectLabel:'сверхотскок' },
-  grinder: { kind:'grinder',label:'Мясорубка',role:'Удержание и тики',color:0xff765b,damage:4,bounce:.22,cooldownMs:260,radius:43,baseUpgradeCost:45,effectLabel:'серия порезов' },
+  basic: { kind:'basic',label:'Дубина',role:'Надёжный ударник',color:0xe7cc8e,damage:16,bounce:1.14,cooldownMs:0,radius:36,baseUpgradeCost:25,effectLabel:'чистый урон' },
+  fire: { kind:'fire',label:'Поджигатель',role:'Долгий огонь',color:0xff6a31,damage:10,bounce:.92,cooldownMs:220,radius:36,baseUpgradeCost:30,effectLabel:'горение 3,2 с' },
+  blast: { kind:'blast',label:'Бабах',role:'Взрыв по толпе',color:0xffd64f,damage:11,bounce:1.55,cooldownMs:1100,radius:37.8,baseUpgradeCost:38,effectLabel:'радиус 168' },
+  ice: { kind:'ice',label:'Морозилка',role:'Контроль скорости',color:0x79d6ff,damage:8,bounce:.55,cooldownMs:320,radius:36,baseUpgradeCost:30,effectLabel:'заморозка 2,2 с' },
+  spike: { kind:'spike',label:'Точило',role:'Пробой брони',color:0xd9d7cc,damage:24,bounce:.38,cooldownMs:180,radius:37.8,baseUpgradeCost:35,effectLabel:'тяжёлый контакт' },
+  electric: { kind:'electric',label:'Шокер',role:'Цепной разряд',color:0xb995ff,damage:9,bounce:.88,cooldownMs:620,radius:36,baseUpgradeCost:38,effectLabel:'до 3 целей' },
+  pit: { kind:'pit',label:'Жор-Яма',role:'Редкое поглощение',color:0x6e4d88,damage:999,bounce:.05,cooldownMs:4200,radius:38.7,baseUpgradeCost:50,effectLabel:'пожирает цель' },
+  poison: { kind:'poison',label:'Токсик',role:'Коррозия брони',color:0x8bea53,damage:5,bounce:.68,cooldownMs:360,radius:36,baseUpgradeCost:35,effectLabel:'яд 4,5 с' },
+  magnet: { kind:'magnet',label:'Притягатель',role:'Собирает врагов в комок',color:0x4de0db,damage:7,bounce:.36,cooldownMs:900,radius:36.9,baseUpgradeCost:42,effectLabel:'мощная стяжка 250 · липкий отскок' },
+  spinner: { kind:'spinner',label:'Карусель',role:'Резко ломает траекторию',color:0xff7db8,damage:12,bounce:1.02,cooldownMs:420,radius:36.9,baseUpgradeCost:38,effectLabel:'вираж 18 · вращающий импульс' },
+  spring: { kind:'spring',label:'Пружинный псих',role:'Максимальный бросок',color:0x70f29a,damage:6,bounce:2.08,cooldownMs:1250,radius:37.8,baseUpgradeCost:42,effectLabel:'сверхотскок' },
+  grinder: { kind:'grinder',label:'Мясорубка',role:'Удержание и тики',color:0xff765b,damage:4,bounce:.22,cooldownMs:260,radius:38.7,baseUpgradeCost:45,effectLabel:'серия порезов' },
 };
 
 export const SOCKETS = [

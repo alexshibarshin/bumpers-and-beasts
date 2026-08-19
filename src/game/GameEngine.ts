@@ -1,7 +1,7 @@
 import { Application, Assets, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import Matter from 'matter-js';
 import { BUMPERS, ENEMIES, GAME } from './config';
-import { armorDamage, clamp, createShuffleBag, seededRandom, shouldRescueStalledBody, starsForHp, tierMultiplier, type ShuffleBag } from './math';
+import { armorDamage, clamp, createShuffleBag, magneticPullVelocity, seededRandom, shouldRescueSpatiallyTrappedBody, shouldRescueStalledBody, spinnerLaunchVelocity, starsForHp, tierMultiplier, type ShuffleBag } from './math';
 import { applyLevelToBumperStats } from '../meta/profile';
 import type { BumperKind, DraftCard, EnemyKind, FlipperMotion, GamePhase, InputLayout, PlacedBumper, RunLoadout, RunResult, Snapshot, StageConfig } from './types';
 
@@ -33,6 +33,8 @@ interface EnemyEntity {
   motionAnchor: { x: number; y: number };
   motionSampleAt: number;
   stalledForMs: number;
+  trapAnchor: { x: number; y: number };
+  trapAnchorAt: number;
   rescueCount: number;
   bossNextAbilityAt: number;
   bossWarnAt: number;
@@ -334,19 +336,28 @@ export class GameEngine {
     this.worldLayer.addChild(innerShade);
 
     const wallStyle = { isStatic: true, friction: 0, restitution: .72, collisionFilter: { category: WALL, mask: ENEMY } };
+    const visibleObstacles = [
+      { id: 'drain-left', position: { x: 150, y: 1112 }, width: 240, height: 28, angle: .22 },
+      { id: 'drain-right', position: { x: 570, y: 1112 }, width: 240, height: 28, angle: -.22 },
+      ...this.stage.obstacles,
+    ];
     const walls = [
       Bodies.rectangle(45, 610, 34, 1040, wallStyle),
       Bodies.rectangle(675, 610, 34, 1040, wallStyle),
       Bodies.rectangle(360, 112, 620, 24, wallStyle),
-      Bodies.rectangle(150, 1112, 240, 28, { ...wallStyle, angle: .22 }),
-      Bodies.rectangle(570, 1112, 240, 28, { ...wallStyle, angle: -.22 }),
-      ...this.stage.obstacles.map(obstacle => Bodies.rectangle(obstacle.position.x, obstacle.position.y, obstacle.width, obstacle.height, { ...wallStyle, angle: obstacle.angle ?? 0, label: `obstacle:${obstacle.id}` })),
+      ...visibleObstacles.map(obstacle => Bodies.rectangle(obstacle.position.x, obstacle.position.y, obstacle.width, obstacle.height, {
+        ...wallStyle, angle: obstacle.angle ?? 0, label: `obstacle:${obstacle.id}`,
+      })),
     ];
     Composite.add(this.engine.world, walls);
-    for (const body of walls.slice(3)) {
-      const g = new Graphics().roundRect(-body.bounds.max.x + body.position.x, -10, body.bounds.max.x - body.bounds.min.x, 20, 10).fill({ color: 0x84664b });
-      g.position.set(body.position.x, body.position.y);
-      g.rotation = body.angle;
+    for (const obstacle of visibleObstacles) {
+      const radius = Math.min(12, obstacle.height / 2);
+      const g = new Graphics()
+        .roundRect(-obstacle.width / 2, -obstacle.height / 2, obstacle.width, obstacle.height, radius)
+        .fill({ color: 0x84664b })
+        .stroke({ color: 0xf2c36c, width: Math.min(4, obstacle.height * .14), alpha: .28 });
+      g.position.set(obstacle.position.x, obstacle.position.y);
+      g.rotation = obstacle.angle ?? 0;
       g.tint = this.stage.theme.secondary;
       this.worldLayer.addChild(g);
     }
@@ -597,7 +608,8 @@ export class GameEngine {
       jetAt: now + 2300 + this.random() * 800,
       jetWarnAt: 0,
       burnUntil: 0, burnNext: 0, iceUntil: 0, poisonUntil: 0, poisonNext: 0,
-      motionAnchor: { x, y: origin.y }, motionSampleAt: now, stalledForMs: 0, rescueCount: 0,
+      motionAnchor: { x, y: origin.y }, motionSampleAt: now, stalledForMs: 0,
+      trapAnchor: { x, y: origin.y }, trapAnchorAt: now, rescueCount: 0,
       bossNextAbilityAt: now + 5600, bossWarnAt: 0, bossRage: false,
       hpBar: view.getChildByLabel('hpbar') as Graphics,
       face: view.getChildByLabel('face') as Text,
@@ -732,21 +744,36 @@ export class GameEngine {
         break;
       case 'magnet':
         device.readyAt = now + config.cooldownMs;
-        for (const target of this.enemies.values()) {
-          if (!target.alive || target.id === enemy.id) continue;
-          const delta = Vector.sub(device.body.position, target.body.position);
-          const distance = Vector.magnitude(delta);
-          if (distance < 185 && distance > 5) {
-            const n = Vector.normalise(delta);
-            Body.setVelocity(target.body, { x: target.body.velocity.x + n.x * 7 * multi, y: target.body.velocity.y + n.y * 7 * multi });
+        {
+          let pulled = 0;
+          const origin = device.body.position;
+          const pulseStrength = GAME.magnetPulseStrength * (1 + (multi - 1) * .48);
+          const pulseRadius = GAME.magnetPulseRadius + (device.placement.tier - 1) * 24;
+          for (const target of this.enemies.values()) {
+            if (!target.alive || target.id === enemy.id) continue;
+            const distance = Vector.magnitude(Vector.sub(origin, target.body.position));
+            if (distance >= pulseRadius) continue;
+            Body.setVelocity(target.body, magneticPullVelocity(target.body.position, origin, target.body.velocity, pulseRadius, pulseStrength));
+            this.energyTether(origin, target.body.position, 0x75fff5);
+            this.burst(target.body.position.x, target.body.position.y, 0x75fff5, 5, 3);
+            pulled += 1;
           }
+          this.ring(origin.x, origin.y, 0x4de0db, pulseRadius);
+          this.ring(origin.x, origin.y, 0xd2fffb, pulseRadius * .62);
+          this.popup(origin.x, origin.y - 64, pulled ? `СТЯЖКА ×${pulled + 1}` : 'МАГНИТ!', 0x8ffff7);
+          this.burst(origin.x, origin.y, 0x4de0db, 30, 11);
+          device.view.children[1].rotation -= .55;
+          this.shakePower = Math.max(this.shakePower, 4);
         }
-        this.ring(p.x, p.y, 0x4de0db, 185);
         break;
       case 'spinner': {
-        const radial = Vector.normalise(Vector.sub(enemy.body.position, device.body.position));
-        Body.setVelocity(enemy.body, { x: enemy.body.velocity.x - radial.y * 9 * multi, y: enemy.body.velocity.y + radial.x * 9 * multi });
-        this.ring(p.x, p.y, 0xff7db8, 76);
+        const spinDirection: 1 | -1 = device.body.position.x < GAME.width / 2 ? 1 : -1;
+        this.spiral(device.body.position, spinDirection, 0xff7db8);
+        this.ring(device.body.position.x, device.body.position.y, 0xffb4dd, 104);
+        this.popup(device.body.position.x, device.body.position.y - 84, 'ВИРАЖ!', 0xffa5d5);
+        this.burst(p.x, p.y, 0xff7db8, 28, 13);
+        device.view.children[1].rotation += spinDirection * .8;
+        this.shakePower = Math.max(this.shakePower, 3);
         break;
       }
       case 'spring':
@@ -766,8 +793,18 @@ export class GameEngine {
     const jitter = (this.random() - .5) * Math.PI / 36;
     const rotated = Vector.rotate(direction, jitter);
     const strength = 10 + config.bounce * 8;
-    if (device.placement.kind === 'spinner') Body.setVelocity(enemy.body, { x: rotated.x * strength - rotated.y * 9 * multi, y: rotated.y * strength + rotated.x * 9 * multi });
-    else Body.setVelocity(enemy.body, { x: rotated.x * strength, y: rotated.y * strength });
+    if (device.placement.kind === 'spinner') {
+      const spinDirection: 1 | -1 = device.body.position.x < GAME.width / 2 ? 1 : -1;
+      Body.setVelocity(enemy.body, spinnerLaunchVelocity(
+        rotated,
+        GAME.spinnerOutwardSpeed + (multi - 1) * 2,
+        GAME.spinnerTangentialSpeed + (multi - 1) * 5,
+        spinDirection,
+      ));
+      Body.setAngularVelocity(enemy.body, spinDirection * (.24 + device.placement.tier * .05));
+    } else if (device.placement.kind === 'magnet') {
+      Body.setVelocity(enemy.body, { x: rotated.x * GAME.magnetReleaseSpeed, y: rotated.y * GAME.magnetReleaseSpeed });
+    } else Body.setVelocity(enemy.body, { x: rotated.x * strength, y: rotated.y * strength });
     device.view.scale.set(1.16);
   }
 
@@ -885,6 +922,12 @@ export class GameEngine {
       device.view.scale.x += (1 - device.view.scale.x) * .18;
       device.view.scale.y += (1 - device.view.scale.y) * .18;
       device.view.rotation += device.placement.kind === 'electric' ? .004 : 0;
+      if (device.placement.kind === 'spinner') device.view.children[1].rotation += .026 * delta / 16.67;
+      if (device.placement.kind === 'magnet') {
+        const pulse = 1 + Math.sin(now / 150) * .065;
+        device.view.children[0].scale.set(pulse);
+        device.view.children[1].rotation -= .006 * delta / 16.67;
+      }
       device.view.alpha += (((device.readyAt > now) ? .58 : 1) - device.view.alpha) * .15;
     }
     if (this.shakePower > .1) {
@@ -981,19 +1024,41 @@ export class GameEngine {
     const moved = Vector.magnitude(Vector.sub(position, enemy.motionAnchor));
     const barelyMoving = enemy.body.speed < GAME.stuckSpeedThreshold && moved < GAME.stuckDistanceThreshold;
     enemy.stalledForMs = barelyMoving ? enemy.stalledForMs + elapsed : 0;
+    const travelRadius = Math.max(GAME.trappedTravelRadiusMin, enemy.radius * GAME.trappedTravelRadiusMultiplier);
+    let distanceFromTrapAnchor = Vector.magnitude(Vector.sub(position, enemy.trapAnchor));
+    if (distanceFromTrapAnchor >= travelRadius) {
+      enemy.trapAnchor = { ...position };
+      enemy.trapAnchorAt = now;
+      distanceFromTrapAnchor = 0;
+    }
     enemy.motionAnchor = { ...position };
     enemy.motionSampleAt = now;
-    if (!shouldRescueStalledBody(
+    const lowMotionStall = shouldRescueStalledBody(
       enemy.body.speed,
       moved,
       enemy.stalledForMs,
       GAME.stuckRescueMs,
       GAME.stuckSpeedThreshold,
       GAME.stuckDistanceThreshold,
-    )) return;
+    );
+    const spatialTrap = shouldRescueSpatiallyTrappedBody(
+      distanceFromTrapAnchor,
+      now - enemy.trapAnchorAt,
+      travelRadius,
+      GAME.trappedRescueMs,
+    );
+    if (!lowMotionStall && !spatialTrap) return;
 
     const towardCenter = position.x < GAME.width / 2 ? 1 : position.x > GAME.width / 2 ? -1 : (enemy.body.id + enemy.rescueCount) % 2 ? 1 : -1;
-    Body.setPosition(enemy.body, { x: position.x + towardCenter * 4, y: position.y + 2 });
+    const repeatedRescue = enemy.rescueCount >= 1;
+    const horizontalNudge = repeatedRescue ? 12 : 9;
+    const downwardNudge = repeatedRescue
+      ? Math.max(GAME.repeatedRescueDownwardNudgeMin, enemy.radius * GAME.repeatedRescueDownwardNudgeRadiusMultiplier)
+      : 8;
+    Body.setPosition(enemy.body, {
+      x: clamp(position.x + towardCenter * horizontalNudge, GAME.playfieldLeft + enemy.radius + 3, GAME.playfieldRight - enemy.radius - 3),
+      y: position.y + downwardNudge,
+    });
     Body.setVelocity(enemy.body, {
       x: towardCenter * GAME.stuckRescueHorizontalSpeed,
       y: GAME.stuckRescueDownwardSpeed,
@@ -1001,6 +1066,9 @@ export class GameEngine {
     Body.setAngularVelocity(enemy.body, towardCenter * .08);
     enemy.stalledForMs = 0;
     enemy.motionAnchor = { ...enemy.body.position };
+    enemy.motionSampleAt = now;
+    enemy.trapAnchor = { ...enemy.body.position };
+    enemy.trapAnchorAt = now;
     enemy.rescueCount += 1;
     this.burst(position.x, position.y, 0xffef83, 9, 4);
     this.ring(position.x, position.y, 0xffef83, enemy.radius * 1.15);
@@ -1073,6 +1141,39 @@ export class GameEngine {
     g.lineTo(to.x, to.y).stroke({ color: 0xc5a7ff, width: 7, alpha: .95 });
     this.fxLayer.addChild(g);
     this.particles.push({ view: g, vx: 0, vy: 0, life: 150, maxLife: 150, gravity: 0 });
+  }
+
+  private energyTether(from: Matter.Vector, to: Matter.Vector, color: number) {
+    const g = new Graphics().moveTo(from.x, from.y);
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const nx = -dy / length;
+    const ny = dx / length;
+    for (let index = 1; index <= 7; index++) {
+      const t = index / 7;
+      const bend = Math.sin(t * Math.PI) * 10 + (this.random() - .5) * 5;
+      g.lineTo(from.x + dx * t + nx * bend, from.y + dy * t + ny * bend);
+    }
+    g.stroke({ color, width: 6, alpha: .92 });
+    this.fxLayer.addChild(g);
+    this.particles.push({ view: g, vx: 0, vy: 0, life: 280, maxLife: 280, gravity: 0 });
+  }
+
+  private spiral(origin: Matter.Vector, direction: 1 | -1, color: number) {
+    const g = new Graphics();
+    const points = 28;
+    for (let index = 0; index < points; index++) {
+      const t = index / (points - 1);
+      const radius = 12 + t * 86;
+      const angle = direction * t * Math.PI * 1.9;
+      const x = origin.x + Math.cos(angle) * radius;
+      const y = origin.y + Math.sin(angle) * radius;
+      if (!index) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke({ color, width: 7, alpha: .9 });
+    this.fxLayer.addChild(g);
+    this.particles.push({ view: g, vx: 0, vy: 0, life: 360, maxLife: 360, gravity: 0 });
   }
 
   private popup(x: number, y: number, value: string, color: number) {

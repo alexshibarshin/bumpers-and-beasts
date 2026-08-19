@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { armorDamage, createShuffleBag, shouldRescueStalledBody, starsForHp, tierMultiplier } from './math';
+import { armorDamage, createShuffleBag, magneticPullVelocity, shouldRescueSpatiallyTrappedBody, shouldRescueStalledBody, spinnerLaunchVelocity, starsForHp, tierMultiplier } from './math';
 
 describe('combat math', () => {
   it('uses flat armor subtraction', () => {
@@ -22,6 +22,24 @@ describe('combat math', () => {
     expect(shouldRescueStalledBody(1.2, 2, 1600, 1600)).toBe(false);
     expect(shouldRescueStalledBody(.2, 9, 1600, 1600)).toBe(false);
     expect(shouldRescueStalledBody(.2, 2, 1200, 1600)).toBe(false);
+  });
+
+  it('rescues jittering bodies that stay inside a small pocket', () => {
+    expect(shouldRescueSpatiallyTrappedBody(18, 2400, 36, 2400)).toBe(true);
+    expect(shouldRescueSpatiallyTrappedBody(42, 2400, 36, 2400)).toBe(false);
+    expect(shouldRescueSpatiallyTrappedBody(18, 1800, 36, 2400)).toBe(false);
+  });
+
+  it('makes the magnet pull nearby moving targets toward its core', () => {
+    const pulled = magneticPullVelocity({ x: 100, y: 0 }, { x: 0, y: 0 }, { x: 3, y: 2 }, 250, 16);
+    expect(pulled.x).toBeLessThan(-7);
+    expect(pulled.y).toBe(2);
+    expect(magneticPullVelocity({ x: 260, y: 0 }, { x: 0, y: 0 }, { x: 3, y: 2 }, 250, 16)).toEqual({ x: 3, y: 2 });
+  });
+
+  it('gives the spinner a dominant and reversible tangential launch', () => {
+    expect(spinnerLaunchVelocity({ x: 0, y: -1 }, 14, 18, 1)).toEqual({ x: 18, y: -14 });
+    expect(spinnerLaunchVelocity({ x: 0, y: -1 }, 14, 18, -1)).toEqual({ x: -18, y: -14 });
   });
 
   it('draws deterministic unique offers from a fair shuffle bag', () => {
