@@ -1,8 +1,9 @@
 import { Application, Assets, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import Matter from 'matter-js';
-import { BUMPERS, DECK, ENEMIES, GAME, SOCKETS, WAVES } from './config';
-import { armorDamage, clamp, seededRandom, shouldRescueStalledBody, starsForHp, tierMultiplier } from './math';
-import type { BumperKind, DraftCard, EnemyKind, FlipperMotion, GamePhase, InputLayout, PlacedBumper, Snapshot } from './types';
+import { BUMPERS, ENEMIES, GAME } from './config';
+import { armorDamage, clamp, createShuffleBag, seededRandom, shouldRescueStalledBody, starsForHp, tierMultiplier, type ShuffleBag } from './math';
+import { applyLevelToBumperStats } from '../meta/profile';
+import type { BumperKind, DraftCard, EnemyKind, FlipperMotion, GamePhase, InputLayout, PlacedBumper, RunLoadout, RunResult, Snapshot, StageConfig } from './types';
 
 const { Bodies, Body, Composite, Engine, Events, Vector } = Matter;
 const WALL = 0x0001;
@@ -33,6 +34,9 @@ interface EnemyEntity {
   motionSampleAt: number;
   stalledForMs: number;
   rescueCount: number;
+  bossNextAbilityAt: number;
+  bossWarnAt: number;
+  bossRage: boolean;
   hpBar: Graphics;
   face: Text;
 }
@@ -90,21 +94,34 @@ export class GameEngine {
   private rerollsThisBuild = 0;
   private inputLayout: InputLayout = 'together';
   private flipperMotion: FlipperMotion = 'auto';
-  private spawnQueue: Array<{ at: number; kind: EnemyKind; gate: number; warned?: boolean }> = [];
+  private spawnQueue: Array<{ at: number; kind: EnemyKind; gate: string; warned?: boolean; hpMultiplier?: number; velocity?: { x: number; y: number } }> = [];
   private waveStartedAt = 0;
   private enemiesRemainingToSpawn = 0;
   private lastTime = 0;
   private snapshotAt = 0;
-  private random = seededRandom(0xb00b135);
+  private random: () => number;
   private hitCooldown = new Map<string, number>();
   private resizeObserver?: ResizeObserver;
   private destroyed = false;
   private countdownTimer?: number;
   private pointerSides = new Map<number, 'left' | 'right' | 'both'>();
   private shakePower = 0;
+  private runStartedAt = 0;
+  private resultSent = false;
+  private draftBag: ShuffleBag<BumperKind>;
+  private debugUsed = false;
 
-  constructor(onSnapshot: (snapshot: Snapshot) => void) {
+  constructor(
+    onSnapshot: (snapshot: Snapshot) => void,
+    private readonly loadout: RunLoadout,
+    private readonly stage: StageConfig,
+    private readonly onResult: (result: RunResult) => void,
+  ) {
     this.onSnapshot = onSnapshot;
+    this.inputLayout = loadout.inputLayout;
+    this.flipperMotion = loadout.flipperMotion;
+    this.random = seededRandom(loadout.seed);
+    this.draftBag = createShuffleBag(loadout.deck.map(item => item.kind), loadout.seed ^ 0xd4af7);
   }
 
   async mount(host: HTMLElement) {
@@ -118,9 +135,9 @@ export class GameEngine {
     });
     if (this.destroyed) return;
     await Assets.load([
-      '/assets/table/rusty-stomach.png', '/assets/table/flipper.png',
-      ...(['grunt', 'heavy', 'light', 'jet', 'splitter'] as EnemyKind[]).map(kind => `/assets/enemies/${kind}.png`),
-      ...DECK.map(kind => `/assets/bumpers/${kind}.png`),
+      this.stage.art, '/assets/table/flipper.png',
+      ...(['grunt', 'heavy', 'light', 'jet', 'splitter', 'boss'] as EnemyKind[]).map(kind => `/assets/enemies/${kind}.png`),
+      ...this.loadout.deck.map(item => `/assets/bumpers/${item.kind}.png`),
     ]);
     if (this.destroyed) return;
     host.replaceChildren(this.app.canvas);
@@ -130,6 +147,7 @@ export class GameEngine {
     this.buildTable();
     this.bindInput();
     Events.on(this.engine, 'collisionStart', this.onCollision);
+    Events.on(this.engine, 'collisionActive', this.onCollisionActive);
     this.app.ticker.add(this.tick);
     this.resizeObserver = new ResizeObserver(() => this.fit(host));
     this.resizeObserver.observe(host);
@@ -142,12 +160,17 @@ export class GameEngine {
     if (this.countdownTimer) window.clearInterval(this.countdownTimer);
     this.resizeObserver?.disconnect();
     Events.off(this.engine, 'collisionStart', this.onCollision);
+    Events.off(this.engine, 'collisionActive', this.onCollisionActive);
     this.app.ticker.remove(this.tick);
-    this.app.destroy(true, { children: true, texture: true });
+    Engine.clear(this.engine);
+    Composite.clear(this.engine.world, false, true);
+    this.app.destroy(true, { children: true });
   }
 
   startStage() {
     this.resetRun();
+    this.runStartedAt = performance.now();
+    this.resultSent = false;
     this.phase = 'build';
     this.wave = 0;
     this.draft = this.rollDraft();
@@ -227,11 +250,13 @@ export class GameEngine {
 
   debugSpawn(kind: EnemyKind = 'grunt') {
     if (this.phase !== 'combat') return;
+    this.debugUsed = true;
     this.spawnEnemy(kind, Math.floor(this.random() * 3));
   }
 
   debugClearWave() {
     if (this.phase !== 'combat') return;
+    this.debugUsed = true;
     this.spawnQueue = [];
     this.enemiesRemainingToSpawn = 0;
     for (const enemy of [...this.enemies.values()]) this.removeEnemy(enemy, false);
@@ -240,6 +265,7 @@ export class GameEngine {
 
   debugBreakBase() {
     if (this.phase !== 'combat') return;
+    this.debugUsed = true;
     this.baseHp = 0;
     this.phase = 'defeat';
     this.spawnQueue = [];
@@ -276,9 +302,7 @@ export class GameEngine {
     this.hitCooldown.clear();
     this.shakePower = 0;
     this.root.position.set(0, 0);
-    this.placement = [
-      { id: 'built-basic', kind: 'basic', socketId: 's7', tier: 1, locked: true },
-    ];
+    this.placement = this.stage.builtInBumpers.map((bumper, index) => ({ id: `built-${index}`, ...bumper, locked: true }));
     this.refreshDevices();
     this.wave = 0;
     this.baseHp = GAME.maxBaseHp;
@@ -290,14 +314,23 @@ export class GameEngine {
     this.selectedBumperId = undefined;
     this.spawnQueue = [];
     this.enemiesRemainingToSpawn = 0;
+    this.draftBag = createShuffleBag(this.loadout.deck.map(item => item.kind), this.loadout.seed ^ 0xd4af7);
+    this.debugUsed = false;
   }
 
   private buildTable() {
-    const tableArt = new Sprite(Texture.from('/assets/table/rusty-stomach.png'));
+    const tableArt = new Sprite(Texture.from(this.stage.art));
     tableArt.width = GAME.width;
     tableArt.height = GAME.height;
+    if (this.stage.order > 1) {
+      const color = this.stage.theme.primary;
+      const lighten = (channel: number) => Math.round((channel + 510) / 3);
+      tableArt.tint = (lighten((color >> 16) & 255) << 16) | (lighten((color >> 8) & 255) << 8) | lighten(color & 255);
+    }
     this.worldLayer.addChild(tableArt);
-    const innerShade = new Graphics().roundRect(49, 115, 622, 1058, 34).fill({ color: 0x121521, alpha: .16 });
+    const innerShade = new Graphics().roundRect(49, 115, 622, 1058, 34)
+      .fill({ color: this.stage.theme.primary, alpha: .12 })
+      .stroke({ color: this.stage.theme.secondary, width: 4, alpha: .4 });
     this.worldLayer.addChild(innerShade);
 
     const wallStyle = { isStatic: true, friction: 0, restitution: .72, collisionFilter: { category: WALL, mask: ENEMY } };
@@ -307,22 +340,22 @@ export class GameEngine {
       Bodies.rectangle(360, 112, 620, 24, wallStyle),
       Bodies.rectangle(150, 1112, 240, 28, { ...wallStyle, angle: .22 }),
       Bodies.rectangle(570, 1112, 240, 28, { ...wallStyle, angle: -.22 }),
-      Bodies.rectangle(115, 870, 190, 20, { ...wallStyle, angle: .72 }),
-      Bodies.rectangle(605, 870, 190, 20, { ...wallStyle, angle: -.72 }),
+      ...this.stage.obstacles.map(obstacle => Bodies.rectangle(obstacle.position.x, obstacle.position.y, obstacle.width, obstacle.height, { ...wallStyle, angle: obstacle.angle ?? 0, label: `obstacle:${obstacle.id}` })),
     ];
     Composite.add(this.engine.world, walls);
     for (const body of walls.slice(3)) {
       const g = new Graphics().roundRect(-body.bounds.max.x + body.position.x, -10, body.bounds.max.x - body.bounds.min.x, 20, 10).fill({ color: 0x84664b });
       g.position.set(body.position.x, body.position.y);
       g.rotation = body.angle;
+      g.tint = this.stage.theme.secondary;
       this.worldLayer.addChild(g);
     }
 
-    for (const socket of SOCKETS) {
+    for (const socket of this.stage.sockets) {
       const ring = new Graphics()
         .circle(0, 0, 48)
         .fill({ color: 0x0d1117, alpha: .75 })
-        .stroke({ color: 0x655b67, width: 5, alpha: .85 });
+        .stroke({ color: this.stage.theme.secondary, width: 5, alpha: .85 });
       ring.position.set(socket.position.x, socket.position.y);
       ring.label = `socket:${socket.id}`;
       this.worldLayer.addChild(ring);
@@ -376,9 +409,9 @@ export class GameEngine {
     }
     this.devices.clear();
     for (const placed of this.placement) {
-      const socket = SOCKETS.find(item => item.id === placed.socketId);
+      const socket = this.stage.sockets.find(item => item.id === placed.socketId);
       if (!socket) continue;
-      const config = BUMPERS[placed.kind];
+      const config = this.bumperStats(placed.kind);
       const body = Bodies.circle(socket.position.x, socket.position.y, config.radius, {
         isStatic: true,
         restitution: config.bounce,
@@ -395,7 +428,7 @@ export class GameEngine {
   }
 
   private makeDeviceView(kind: BumperKind, tier: number, radius: number) {
-    const config = BUMPERS[kind];
+    const config = this.bumperStats(kind);
     const c = new Container();
     const glow = new Graphics().circle(0, 0, radius + 10).fill({ color: config.color, alpha: .12 });
     const art = new Sprite(Texture.from(`/assets/bumpers/${kind}.png`));
@@ -444,7 +477,7 @@ export class GameEngine {
   }
 
   private handleBuildTap(x: number, y: number) {
-    const socket = SOCKETS.map(item => ({ ...item, d: Vector.magnitude(Vector.sub(item.position, { x, y })) })).sort((a, b) => a.d - b.d)[0];
+    const socket = this.stage.sockets.map(item => ({ ...item, d: Vector.magnitude(Vector.sub(item.position, { x, y })) })).sort((a, b) => a.d - b.d)[0];
     if (!socket || socket.d > 68) return;
     if (this.pendingRewards.length) {
       const reward = this.pendingRewards[0];
@@ -500,15 +533,14 @@ export class GameEngine {
   }
 
   private rollDraft(): DraftCard[] {
-    const source: Array<BumperKind | 'repair'> = [...DECK];
-    if (this.baseHp <= GAME.maxBaseHp * .5) source.push('repair');
-    const result: DraftCard[] = [];
-    while (result.length < 3) {
-      const kind = source[Math.floor(this.random() * source.length)];
-      if (result.some(card => card.kind === kind)) continue;
-      result.push({ id: `${kind}-${Date.now()}-${result.length}-${Math.round(this.random() * 9999)}`, kind });
-    }
+    const result: DraftCard[] = this.draftBag.drawUnique(3).map((kind,index) => ({ id: `${kind}-${this.wave}-${index}`, kind }));
+    if (this.baseHp <= GAME.maxBaseHp * .5 && this.random() < .35) result[2] = { id: `repair-${this.wave}`, kind: 'repair' };
     return result;
+  }
+
+  private bumperStats(kind: BumperKind) {
+    const level = this.loadout.deck.find(item => item.kind === kind)?.level ?? 1;
+    return applyLevelToBumperStats(BUMPERS[kind], level);
   }
 
   private beginCombat() {
@@ -523,22 +555,23 @@ export class GameEngine {
   }
 
   private makeWave(wave: number) {
-    const kinds = WAVES[wave - 1] ?? WAVES.at(-1)!;
-    const queue: Array<{ at: number; kind: EnemyKind; gate: number; warned?: boolean }> = [];
-    let at = 450;
-    for (let i = 0; i < kinds.length; i++) {
-      queue.push({ at, kind: kinds[i], gate: Math.floor(this.random() * 3) });
-      at += 470 + this.random() * 260;
-      if ((i + 1) % 3 === 0) at += 350;
+    const config = this.stage.waves[wave - 1] ?? this.stage.waves.at(-1)!;
+    const queue: Array<{ at: number; kind: EnemyKind; gate: string; warned?: boolean; hpMultiplier?: number; velocity?: { x: number; y: number } }> = [];
+    for (const event of config.events) {
+      const count = event.count ?? 1;
+      for (let index = 0; index < count; index++) queue.push({ at: event.atMs + index * (event.intervalMs ?? 240), kind: event.enemy, gate: event.gate, hpMultiplier: event.hpMultiplier, velocity: event.velocity });
     }
+    queue.sort((a, b) => a.at - b.at);
     return queue;
   }
 
-  private spawnEnemy(kind: EnemyKind, gate: number, mini = false) {
+  private spawnEnemy(kind: EnemyKind, gate: string | number, mini = false, hpMultiplier = 1, velocity?: { x: number; y: number }) {
     const config = ENEMIES[kind];
     const radius = mini ? config.radius * .7 : config.radius;
-    const x = [145, 360, 575][gate] + (this.random() - .5) * 56;
-    const body = Bodies.circle(x, 150, radius, {
+    const gateConfig = typeof gate === 'number' ? this.stage.spawnGates[gate] : this.stage.spawnGates.find(item => item.id === gate);
+    const origin = gateConfig?.position ?? { x: 360, y: 150 };
+    const x = origin.x + (this.random() - .5) * 56;
+    const body = Bodies.circle(x, origin.y, radius, {
       restitution: config.restitution,
       friction: .002,
       frictionAir: config.frictionAir,
@@ -546,29 +579,31 @@ export class GameEngine {
       collisionFilter: { category: ENEMY, mask: WALL | ENEMY | DEVICE | FLIPPER },
       label: `enemy:${kind}`,
     });
-    Body.setVelocity(body, { x: (this.random() - .5) * 3, y: 1.5 + this.random() * 2 });
+    Body.setVelocity(body, velocity ?? { x: (this.random() - .5) * 3, y: 1.5 + this.random() * 2 });
     const view = this.makeEnemyView(kind, radius);
-    view.position.set(x, 150);
+    view.position.set(x, origin.y);
     this.worldLayer.addChild(view);
     Composite.add(this.engine.world, body);
     const now = performance.now();
-    const hp = mini ? config.hp * .42 : config.hp;
+    const stageHp = this.stage.enemyTuning?.hpMultiplier ?? 1;
+    const hp = (mini ? config.hp * .42 : config.hp) * stageHp * hpMultiplier;
     const entity: EnemyEntity = {
       id: `${kind}-${body.id}`,
       kind, body, view, hp, maxHp: hp,
-      armor: mini ? 0 : config.armor,
+      armor: mini ? 0 : config.armor + (this.stage.enemyTuning?.armorBonus ?? 0),
       baseDamage: mini ? 1 : config.baseDamage,
       reward: mini ? 1 : config.reward,
       radius, alive: true,
       jetAt: now + 2300 + this.random() * 800,
       jetWarnAt: 0,
       burnUntil: 0, burnNext: 0, iceUntil: 0, poisonUntil: 0, poisonNext: 0,
-      motionAnchor: { x, y: 150 }, motionSampleAt: now, stalledForMs: 0, rescueCount: 0,
+      motionAnchor: { x, y: origin.y }, motionSampleAt: now, stalledForMs: 0, rescueCount: 0,
+      bossNextAbilityAt: now + 5600, bossWarnAt: 0, bossRage: false,
       hpBar: view.getChildByLabel('hpbar') as Graphics,
       face: view.getChildByLabel('face') as Text,
     };
     this.enemies.set(body.id, entity);
-    this.burst(x, 150, config.color, 14, 5);
+    this.burst(x, origin.y, config.color, 14, 5);
   }
 
   private makeEnemyView(kind: EnemyKind, radius: number) {
@@ -619,6 +654,17 @@ export class GameEngine {
     }
   };
 
+  private onCollisionActive = (event: Matter.IEventCollision<Matter.Engine>) => {
+    const now = performance.now();
+    for (const pair of event.pairs) {
+      const enemyBody = this.enemies.has(pair.bodyA.id) ? pair.bodyA : this.enemies.has(pair.bodyB.id) ? pair.bodyB : undefined;
+      if (!enemyBody) continue;
+      const other = enemyBody === pair.bodyA ? pair.bodyB : pair.bodyA;
+      const device = this.devices.get(other.id);
+      if (device?.placement.kind === 'grinder') this.hitDevice(this.enemies.get(enemyBody.id)!, device, now);
+    }
+  };
+
   private hitFlipper(enemy: EnemyEntity, side: 'left' | 'right', now: number) {
     const flipper = this.flippers.find(item => item.side === side)!;
     const key = `${enemy.id}:flipper:${side}`;
@@ -641,10 +687,10 @@ export class GameEngine {
 
   private hitDevice(enemy: EnemyEntity, device: DeviceEntity, now: number) {
     const pairKey = `${enemy.id}:${device.placement.id}`;
-    const lock = Math.max(GAME.perEnemyBumperCooldownMs, BUMPERS[device.placement.kind].cooldownMs);
+    const config = this.bumperStats(device.placement.kind);
+    const lock = Math.max(GAME.perEnemyBumperCooldownMs, config.cooldownMs);
     if ((this.hitCooldown.get(pairKey) ?? 0) > now || device.readyAt > now) return;
     this.hitCooldown.set(pairKey, now + lock);
-    const config = BUMPERS[device.placement.kind];
     const multi = tierMultiplier(device.placement.tier);
     let dealt = device.placement.kind === 'pit'
       ? 0
@@ -661,7 +707,7 @@ export class GameEngine {
         this.shakePower = Math.max(this.shakePower, 8);
         break;
       case 'ice':
-        if (dealt > 0) enemy.iceUntil = now + 2200 * multi;
+        if (dealt > 0) enemy.iceUntil = now + 2200 * multi * (enemy.kind === 'boss' ? .42 : 1);
         this.burst(p.x, p.y, 0x8de5ff, 22, 6);
         break;
       case 'spike':
@@ -673,7 +719,8 @@ export class GameEngine {
         break;
       case 'pit':
         device.readyAt = now + config.cooldownMs;
-        if (enemy.kind === 'heavy') this.damageEnemy(enemy, enemy.maxHp * .6, 'pit', true);
+        if (enemy.kind === 'boss') this.damageEnemy(enemy, enemy.maxHp * .18, 'pit', true);
+        else if (enemy.kind === 'heavy') this.damageEnemy(enemy, enemy.maxHp * .6, 'pit', true);
         else this.killEnemy(enemy);
         this.ring(p.x, p.y, 0x9e65d8, 90);
         this.shakePower = Math.max(this.shakePower, 5);
@@ -683,6 +730,34 @@ export class GameEngine {
         enemy.poisonNext = now + 520;
         this.burst(p.x, p.y, 0x8bea53, 20, 5);
         break;
+      case 'magnet':
+        device.readyAt = now + config.cooldownMs;
+        for (const target of this.enemies.values()) {
+          if (!target.alive || target.id === enemy.id) continue;
+          const delta = Vector.sub(device.body.position, target.body.position);
+          const distance = Vector.magnitude(delta);
+          if (distance < 185 && distance > 5) {
+            const n = Vector.normalise(delta);
+            Body.setVelocity(target.body, { x: target.body.velocity.x + n.x * 7 * multi, y: target.body.velocity.y + n.y * 7 * multi });
+          }
+        }
+        this.ring(p.x, p.y, 0x4de0db, 185);
+        break;
+      case 'spinner': {
+        const radial = Vector.normalise(Vector.sub(enemy.body.position, device.body.position));
+        Body.setVelocity(enemy.body, { x: enemy.body.velocity.x - radial.y * 9 * multi, y: enemy.body.velocity.y + radial.x * 9 * multi });
+        this.ring(p.x, p.y, 0xff7db8, 76);
+        break;
+      }
+      case 'spring':
+        device.readyAt = now + config.cooldownMs;
+        this.burst(p.x, p.y, 0x70f29a, 28, 12);
+        this.popup(p.x, p.y - 52, 'ПРУЖИНА!', 0xbaffc8);
+        break;
+      case 'grinder':
+        this.burst(p.x, p.y, 0xff765b, 9, 4);
+        device.view.rotation += .3;
+        break;
       default:
         this.burst(p.x, p.y, config.color, 12, 5);
     }
@@ -690,7 +765,9 @@ export class GameEngine {
     const direction = Vector.normalise(Vector.sub(enemy.body.position, device.body.position));
     const jitter = (this.random() - .5) * Math.PI / 36;
     const rotated = Vector.rotate(direction, jitter);
-    Body.setVelocity(enemy.body, { x: rotated.x * (10 + config.bounce * 8), y: rotated.y * (10 + config.bounce * 8) });
+    const strength = 10 + config.bounce * 8;
+    if (device.placement.kind === 'spinner') Body.setVelocity(enemy.body, { x: rotated.x * strength - rotated.y * 9 * multi, y: rotated.y * strength + rotated.x * 9 * multi });
+    else Body.setVelocity(enemy.body, { x: rotated.x * strength, y: rotated.y * strength });
     device.view.scale.set(1.16);
   }
 
@@ -820,11 +897,12 @@ export class GameEngine {
       const nextSpawn = this.spawnQueue[0];
       if (nextSpawn && !nextSpawn.warned && nextSpawn.at <= elapsed + 480) {
         nextSpawn.warned = true;
-        this.ring([145, 360, 575][nextSpawn.gate], 150, ENEMIES[nextSpawn.kind].color, 55);
+        const gate = this.stage.spawnGates.find(item => item.id === nextSpawn.gate)?.position ?? { x: 360, y: 150 };
+        this.ring(gate.x, gate.y, ENEMIES[nextSpawn.kind].color, 55);
       }
       while (this.spawnQueue.length && this.spawnQueue[0].at <= elapsed) {
         const next = this.spawnQueue.shift()!;
-        this.spawnEnemy(next.kind, next.gate);
+        this.spawnEnemy(next.kind, next.gate, false, next.hpMultiplier, next.velocity);
         this.enemiesRemainingToSpawn -= 1;
       }
       if (this.combo && now - this.comboAt > GAME.comboWindowMs && this.enemies.size) this.combo = 0;
@@ -864,6 +942,28 @@ export class GameEngine {
           this.burst(p.x, p.y - enemy.radius, 0xff7b2f, 22, 8);
           enemy.jetAt = now + 2600 + this.random() * 900;
           enemy.jetWarnAt = 0;
+        }
+      }
+      if (enemy.kind === 'boss') {
+        if (!enemy.bossRage && enemy.hp <= enemy.maxHp * .35) {
+          enemy.bossRage = true;
+          this.popup(p.x, p.y - 90, 'ЯРОСТЬ!', 0xff5b61);
+          this.shakePower = 12;
+        }
+        enemy.view.tint = enemy.bossRage ? 0xff8b8b : enemy.hp <= enemy.maxHp * .66 ? 0xffc6aa : 0xffffff;
+        if (now >= enemy.bossNextAbilityAt) {
+          if (!enemy.bossWarnAt) {
+            enemy.bossWarnAt = now;
+            this.ring(p.x, p.y, 0xff374c, enemy.radius * 2.2);
+            this.popup(p.x, p.y - 88, 'ТАРАН!', 0xffd05c);
+          } else if (now - enemy.bossWarnAt >= 720) {
+            Body.setVelocity(enemy.body, { x: enemy.body.velocity.x * .25, y: enemy.bossRage ? 22 : 18 });
+            const summonCount = enemy.bossRage ? 3 : 2;
+            for (let i = 0; i < summonCount; i++) this.spawnEnemy(i % 2 ? 'grunt' : 'light', i % 2 ? 'left' : 'right', true);
+            this.burst(p.x, p.y, 0xff4157, 38, 11);
+            enemy.bossWarnAt = 0;
+            enemy.bossNextAbilityAt = now + (enemy.bossRage ? 3900 : 5900);
+          }
         }
       }
       this.rescueStalledEnemy(enemy, now);
@@ -911,9 +1011,16 @@ export class GameEngine {
     this.combo = 0;
     this.burst(enemy.body.position.x, 1165, 0xff4157, 28, 12);
     this.popup(360, 1100, `БАЗА −${enemy.baseDamage}`, 0xff6673);
-    this.removeEnemy(enemy, false);
     this.shakePower = Math.max(this.shakePower, 9);
     navigator.vibrate?.(45);
+    if (enemy.kind === 'boss' && this.baseHp > 0) {
+      Body.setPosition(enemy.body, { x: 360, y: 245 });
+      Body.setVelocity(enemy.body, { x: (this.random() - .5) * 6, y: -4 });
+      enemy.bossNextAbilityAt = performance.now() + 4200;
+      enemy.bossWarnAt = 0;
+      return;
+    }
+    this.removeEnemy(enemy, false);
     if (this.baseHp <= 0) {
       this.phase = 'defeat';
       this.spawnQueue = [];
@@ -923,7 +1030,7 @@ export class GameEngine {
   }
 
   private finishWave() {
-    if (this.wave >= GAME.totalWaves) {
+    if (this.wave >= this.stage.waves.length) {
       this.phase = 'victory';
       this.publish(true);
       return;
@@ -1002,7 +1109,7 @@ export class GameEngine {
     this.onSnapshot({
       phase: this.phase,
       wave: this.wave,
-      totalWaves: GAME.totalWaves,
+      totalWaves: this.stage.waves.length,
       baseHp: this.baseHp,
       maxBaseHp: GAME.maxBaseHp,
       scrap: this.scrap,
@@ -1020,6 +1127,22 @@ export class GameEngine {
       resultStars: this.phase === 'victory' ? starsForHp(this.baseHp, GAME.maxBaseHp) : 0,
       pendingRewards: [...this.pendingRewards],
       buildHint: this.pendingRewards.length ? `Поставь: ${this.pendingRewards[0] === 'repair' ? 'ремонт' : BUMPERS[this.pendingRewards[0] as BumperKind].label}` : this.selectedBumperId ? 'Выбери новый сокет' : undefined,
+      bossHp: [...this.enemies.values()].find(enemy => enemy.kind === 'boss')?.hp,
+      bossMaxHp: [...this.enemies.values()].find(enemy => enemy.kind === 'boss')?.maxHp,
+      bossRage: [...this.enemies.values()].find(enemy => enemy.kind === 'boss')?.bossRage,
     });
+    if (!this.resultSent && (this.phase === 'victory' || this.phase === 'defeat')) {
+      this.resultSent = true;
+      const result: RunResult = {
+        runId: `${this.stage.id}-${Date.now()}-${Math.round(this.random() * 1e9)}`,
+        stageId: this.stage.id,
+        outcome: this.debugUsed || this.loadout.debug ? 'abandoned' : this.phase === 'victory' ? 'victory' : 'defeat',
+        stars: this.phase === 'victory' ? starsForHp(this.baseHp, GAME.maxBaseHp) : 0,
+        baseHp: this.baseHp, maxBaseHp: GAME.maxBaseHp, score: this.score, reachedWave: this.wave,
+        totalWaves: this.stage.waves.length, durationMs: Math.max(0, performance.now() - this.runStartedAt), seed: this.loadout.seed,
+        deckSnapshot: this.loadout.deck.map(item => ({ ...item })),
+      };
+      queueMicrotask(() => this.onResult(result));
+    }
   }
 }

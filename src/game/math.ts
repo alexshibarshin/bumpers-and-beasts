@@ -28,6 +28,29 @@ export function seededRandom(seed: number) {
   };
 }
 
+export interface ShuffleBag<T> { drawUnique(count: number): T[] }
+
+export function createShuffleBag<T>(items: readonly T[], seed: number): ShuffleBag<T> {
+  const random = seededRandom(seed);
+  let bag: T[] = [];
+  const refill = () => {
+    bag = [...items];
+    for (let index = bag.length - 1; index > 0; index--) {
+      const swap = Math.floor(random() * (index + 1));
+      [bag[index], bag[swap]] = [bag[swap], bag[index]];
+    }
+  };
+  return { drawUnique(count: number) {
+    const result: T[] = [];
+    while (result.length < Math.min(count, new Set(items).size)) {
+      if (!bag.length) refill();
+      const next = bag.shift()!;
+      if (!result.includes(next)) result.push(next);
+    }
+    return result;
+  } };
+}
+
 export function shouldRescueStalledBody(
   speed: number,
   movedDistance: number,
